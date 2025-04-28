@@ -628,6 +628,7 @@ def parse_args():
     parser.add_argument("--text_column", type=str, default="tweet", help="Column name for text data")
     parser.add_argument("--label_column", type=str, choices=["soft_label", "hard_label"], default="hard_label", help="Column name for label data")
     parser.add_argument("--split_data", type=bool, default=False, help="Whether to split merged dataset into train/validation")
+    parser.add_argument("--test_exists", type=bool, default=True, help="If there is a test set")
     parser.add_argument("--split_ratio", type=float, default=0.2, help="Ratio of validation set")
     parser.add_argument("--curriculum_learning", type=bool, default=True, help="Compute difficulty scores for curriculum learning")
     return parser.parse_args()
@@ -661,7 +662,8 @@ if __name__ == "__main__":
         dev_hard_df.to_csv(os.path.join(output_dir, "dev_hard_labels.csv"), index=False, encoding="utf-8")
         dev_soft_df.to_csv(os.path.join(output_dir, "dev_soft_labels.csv"), index=False, encoding="utf-8")
 
-    # Load and preprocess test set
-    test_df = load_and_preprocess_exist2025_test(test_dir = args.test_dir,language = args.language, text_column = args.text_column)
-    test_df.to_csv(os.path.join(output_dir, "test_no_labels_preprocessed.csv"), index=False, encoding="utf-8")
-    print("Dataset Preprocessing completed.")
+    if args.test_exists:
+        # Load and preprocess test set
+        test_df = load_and_preprocess_exist2025_test(test_dir = args.test_dir,language = args.language, text_column = args.text_column)
+        test_df.to_csv(os.path.join(output_dir, "test_no_labels_preprocessed.csv"), index=False, encoding="utf-8")
+        print("Dataset Preprocessing completed.")
