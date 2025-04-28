@@ -6,6 +6,9 @@ import numpy as np
 import argparse
 import chardet
 import emoji
+import html
+import unicodedata
+import spacy
 import matplotlib.pyplot as plt
 import seaborn as sns
 from pathlib import Path
@@ -19,12 +22,13 @@ from ekphrasis.classes.preprocessor import TextPreProcessor
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
 LABEL_LIST = [
+    "NO",
     "IDEOLOGICAL-INEQUALITY",
     "STEREOTYPING-DOMINANCE",
     "OBJECTIFICATION",
     "SEXUAL-VIOLENCE",
-    "MISOGYNY-NON-SEXUAL-VIOLENCE",
-    "NO"]
+    "MISOGYNY-NON-SEXUAL-VIOLENCE"
+    ]
 
 
 def create_hard_labels(df):
@@ -42,80 +46,125 @@ def create_soft_labels(df):
     )
     return df
 
+# python -m spacy download en_core_web_sm
+# python -m spacy download es_core_news_sm
+# Load English & Spanish NLP models
+nlp_en = spacy.load("en_core_web_sm")
+nlp_es = spacy.load("es_core_news_sm")
 
-# PRE-PROCESSING
+# Initialize Ekphrasis Text Processor (for English)
 text_processor = TextPreProcessor(
-    # terms that will be normalized
-    normalize = ['user', 'url', 'email'],
+    normalize=['user', 'email', 'date', 'number', 'phone'],  # Normalize users,  emails
+    segmenter="twitter",  # Segment hashtags
+    corrector="twitter",  # Correct common typos
+    unpack_hashtags=True,
+    unpack_contractions=True,
+    tokenizer=SocialTokenizer(lowercase=False).tokenize  # Keep casing
+)
 
-    # terms that will be annotated
-    #annotate = {'hashtag'},  #{'allcaps', 'repeated', 'elongated'},
+# Spanish contractions dictionary
+spanish_contractions = {
+    "pa’": "para", "pal": "para el", "na’": "nada",
+    "pa": "para", "pa'": "para", "d’": "de", "del’": "del",
+    "q": "que", "xq": "porque", "toy": "estoy"
+}
 
-    # corpus from which the word statistics are going to be used for word segmentation
-    segmenter = 'twitter',  # or 'english'
+def remove_accents(text):
+    """Normalize accented characters (for Spanish)."""
+    return ''.join(c for c in unicodedata.normalize('NFD', text) if unicodedata.category(c) != 'Mn')
 
-    # corpus from which the word statistics are going to be used for spell correction
-    corrector = 'twitter',  # or 'english'
-
-    fix_html = False,              # fix HTML tokens
-    fix_text = False,              # fix text
-    unpack_hashtags = True,       # perform word segmentation on hashtags
-    unpack_contractions = False,  # Unpack contractions (can't -> can not)
-    spell_correct_elong = False,   # spell correction for elongated words
-
-    tokenizer = SocialTokenizer(lowercase = False).tokenize)
-
-
-# def sep_digits(x):
-#     return " ".join(re.split('(\d+)', x))
-
-
-# def sep_punc(x):
-#     punc = '!"#$%&\'()*+,-./:;<=>?@[\\]^_`{|}~؛،؟؛.»«”'
-#     out = []
-#     for char in x:
-#         if char in punc:
-#             out.append(' ' + char + ' ')
-#         else:
-#             out.append(char)
-#     return ''.join(out)
-
-
-ws.load()
-def segment_hashtags(text):
-    text = re.sub(r'#\S+', lambda match: ' '.join(ws.segment(match.group())), text)
+def expand_contractions(text, lang):
+    """Expand contractions in English & Spanish."""
+    if lang == "es":
+        for contraction, replacement in spanish_contractions.items():
+            text = text.replace(contraction, replacement)
     return text
 
+def emojis_to_text(sentence, lang):
+    """Convert emojis into text in English or Spanish."""
+    demojized = emoji.demojize(sentence, language=lang)
+    return re.sub(r':[\S]+:', lambda x: x.group().replace('_', ' ').replace('-', ' ').replace(':', ''), demojized)
 
-def emojis_into_text(sentence):
-    demojized_sent = emoji.demojize(sentence)
-    emoji_txt = re.sub(r':[\S]+:', lambda x: x.group().replace('_', ' ').replace('-', ' ').replace(':', ''), demojized_sent)
-    return emoji_txt
+def remove_urls(text):
+    """Remove URLs from text using regex."""
+    url_pattern = r"https?://\S+|www\.\S+"  # Matches both HTTP and WWW URLs
+    return re.sub(url_pattern, "", text)
 
+def fix_html(text):
+    """Convert HTML entities (e.g., &amp; -> and)."""
+    return html.unescape(text)
 
-def preprocessing(text):
+def tokenize_text(text, lang):
+    """Tokenize using spaCy (Spanish or English)."""
+    nlp = nlp_es if lang == "es" else nlp_en
+    return ' '.join([token.text for token in nlp(text)])
 
-    # Convert the emojis into their textual representation
-    text = emojis_into_text(text)
+def preprocessing(text, lang):
+    """Preprocess tweets in English & Spanish, handling emojis correctly per language."""
+    
+    # Convert emojis to text based on language
+    emoji_lang = "es" if lang == "es" else "en"
+    text = emojis_to_text(text, emoji_lang)
 
-    # # Replace '&amp;' with 'and'
-    text = re.sub(r'&amp;','and', text)
-    text = re.sub(r'&','and', text)
+    # Fix HTML entities
+    text = fix_html(text)
 
-    # # # Replace the unicode apostrophe
-    text = re.sub(r"’","'", text)
-    text = re.sub(r'“','"', text)
+    # Remove URLs
+    text = remove_urls(text)
 
-    # Replace consecutive non-ASCII characters with whitespace
-    text = re.sub(r'[^\x00-\x7F]+',' ', text)
+    # text = re.sub(r'@[\w]+', '', text)
 
-    text = re.sub(' +',' ', text) 
+    # substitution of numbers, dates ...
+    # text = re.sub(r'[-\+]?([0-9]+[\.:,;\\/ -])*[0-9]+', '', text) 
 
-    # Apply the text processor from ekphrasis library
+    # Expand contractions based on language
+    if lang == "es":
+        text = expand_contractions(text, lang="es")
+
+    # Normalize accents (for Spanish only)
+    if lang == "es":
+        text = remove_accents(text)
+
+    # substituition of repetition of .
+    text = re.sub(r"\.\.\.\.+", r'...', text)
+    
+    # the use of ¿ ¡ or is unreliable on social media, what to do?
+    text = re.sub(r"¡", '', text)
+    text = re.sub(r"¿", '', text)
+
+    # useful patterns and token for substitutions
+    multiple_question_marks = 'TMQM'
+    multiple_exclamation_marks = 'TMEM'
+    mixed_exclamation_question_marks = 'TMEQM'
+    
+    # substitution of multiple occurrence of ! ? and !?
+    text = re.sub(r"(^|[^\?!])(!(\s*!)+)([^\?!]|$)", r'\1 ' + multiple_exclamation_marks + r' \4', text)
+    text = re.sub(r"(^|[^\?!])(\?(\s*\?)+)([^\?!]|$)", r'\1 ' + multiple_question_marks + r' \4', text)
+    text = re.sub(r"(^|[^\?!])([!\?](\s*[!\?])+)([^\?!]|$)", r'\1 ' + mixed_exclamation_question_marks + r' \4', text)
+    
+    text = re.sub(multiple_question_marks, '??', text)
+    text = re.sub(multiple_exclamation_marks, '!!', text)
+    text = re.sub(mixed_exclamation_question_marks, '?!', text)
+
+    # Remove excessive spaces & unwanted characters
+    text = re.sub(r'[^\x00-\x7F]+', ' ', text)  # Remove non-ASCII chars
+    text = re.sub(' +', ' ', text).strip()  # Normalize spaces
+
+    # remove all form of repetition
+    text = re.sub(r"([^\.]+?)\1+", r'\1\1', text)    
+
+    # Apply Ekphrasis for tweets
     text = ' '.join(text_processor.pre_process_doc(text))
 
-    # Apply hashtag segmentation
-    text = segment_hashtags(text)
+    # === Keep only one <user> token if multiple exist ===
+    text = re.sub(r'(<user>\s*)+', '<user> ', text).strip()
+
+    # add space after dots
+    text = re.sub(r'([a-z])(\.|\.\.\.|\?|!|:|;|,|"|\)|}|]|…)(\w)', r'\1\2 \3', text)
+     
+    # remove useless spaces
+    text = re.sub(r"(\s)\1*", r'\1', text)
+    text = re.sub(r"(^\s*|\s*$)", r'', text)
 
     return text
 
@@ -203,6 +252,113 @@ def save_label_distribution(df, label_column, output_path, soft_labels=False):
     plt.close()
 
 
+def compute_label_rarity(df, label_column="hard_labels", label_names=None):
+    """
+    Compute inverse frequency for each label for use as rarity.
+
+    Args:
+        df (pd.DataFrame): Dataset with hard labels.
+        label_column (str): Column name containing hard labels.
+        label_names (list): List of label names (for ordering).
+
+    Returns:
+        dict: {label_idx: rarity_score}
+    """
+    from collections import Counter
+    label_counts = Counter()
+
+    for labels in df[label_column]:
+        if isinstance(labels, str):
+            labels = json.loads(labels)
+        if isinstance(labels, dict):
+            labels = list(labels.values())
+        for idx, val in enumerate(labels):
+            if val == 1:
+                label_counts[idx] += 1
+
+    total = len(df)
+    rarity = {
+        idx: 1 / (label_counts[idx] / total + 1e-6)  # avoid division by zero
+        for idx in range(len(label_names))
+    }
+    return rarity
+
+
+def compute_difficulty(row, evaluation_type="hard", rarity_scores=None):
+    """
+    Compute a difficulty score including label rarity (for hard/soft/both modes).
+    
+    Args:
+        row (dict or pd.Series)
+        evaluation_type (str): "hard", "soft", or "both"
+        rarity_scores (dict or None): Precomputed rarity scores per label index
+    
+    Returns:
+        float: Difficulty score
+    """
+    label_entropy = 0.0
+    num_labels = 0
+    avg_rarity = 0.0
+
+    # --- Soft label entropy ---
+    if evaluation_type in ["soft", "both"] and 'soft_labels' in row and row['soft_labels']:
+        soft_labels = row['soft_labels']
+        if isinstance(soft_labels, str):
+            try:
+                soft_labels = json.loads(soft_labels)
+            except Exception:
+                soft_labels = []
+        if isinstance(soft_labels, dict):
+            soft_labels = list(soft_labels.values())
+        if isinstance(soft_labels, list) and sum(soft_labels) > 0:
+            label_entropy = entropy(soft_labels)
+
+    # --- Hard label count and rarity ---
+    if evaluation_type in ["hard", "both"] and 'hard_labels' in row and row['hard_labels']:
+        hard_labels = row['hard_labels']
+        if isinstance(hard_labels, str):
+            try:
+                hard_labels = json.loads(hard_labels)
+            except Exception:
+                hard_labels = []
+        if isinstance(hard_labels, dict):
+            hard_labels = list(hard_labels.values())
+        if isinstance(hard_labels, list):
+            num_labels = sum(hard_labels)
+            if rarity_scores:
+                label_rarities = [rarity_scores.get(i, 1.0) for i, val in enumerate(hard_labels) if val == 1]
+                if label_rarities:
+                    avg_rarity = sum(label_rarities) / len(label_rarities)
+
+    # --- Inverted text length ---
+    tweet = row.get('tweet', "")
+    text_length = len(tweet.split()) if isinstance(tweet, str) else 0
+    inverted_text_score = 1 / (text_length + 1)
+
+    # --- Final score ---
+    if evaluation_type == "hard":
+        difficulty = (
+            0.6 * num_labels + 
+            0.1 * inverted_text_score + 
+            0.3 * avg_rarity
+        )
+    elif evaluation_type == "soft":
+        difficulty = (
+            0.8 * label_entropy + 
+            0.1 * inverted_text_score + 
+            0.1 * avg_rarity
+        )
+    else:  # both
+        difficulty = (
+            0.4 * label_entropy + 
+            0.3 * num_labels + 
+            0.2 * avg_rarity + 
+            0.1 * inverted_text_score
+        )
+
+    return difficulty
+
+
 def analyze_dataset(df, text_column, label_column, output_dir, dataset_name, soft_labels=False):
     """Perform dataset analysis: missing values, duplicates, and save label distribution."""
     print(f"\nAnalyzing {dataset_name} dataset...")
@@ -227,7 +383,7 @@ def analyze_dataset(df, text_column, label_column, output_dir, dataset_name, sof
     print("Text Length Statistics:\n", df['text_length'].describe(), "\n")
 
     print(f"\nPre-processing {dataset_name} dataset...")
-    df[text_column] = df[text_column].apply(lambda x: preprocessing(x))
+    df[text_column] = df.apply(lambda row: preprocessing(row[text_column], row["lang"]), axis=1)
 
     # Check and save Label Distribution
     print(f"\nSaving Label Distribution for {dataset_name} dataset...")
@@ -245,7 +401,7 @@ def analyze_dataset(df, text_column, label_column, output_dir, dataset_name, sof
     return df
 
 
-def load_exist2025_dataset(train_dir, dev_dir, merge_data=False, language="all", analyze=True, text_column="tweet", label_column="hard_label"):
+def load_exist2025_dataset(train_dir, dev_dir, merge_data=True, curriculum_learning=True, language="all", analyze=True, text_column="tweet", label_column="hard_label"):
     """
     Load, process, and optionally analyze the EXIST 2024 dataset.
 
@@ -296,6 +452,7 @@ def load_exist2025_dataset(train_dir, dev_dir, merge_data=False, language="all",
         # Filter by language
         if language in ["en", "es"]:
             df = df[df['lang'] == language]
+            df.reset_index(drop=True, inplace=True)
 
         # Analyze dataset if requested
         if analyze:
@@ -306,7 +463,12 @@ def load_exist2025_dataset(train_dir, dev_dir, merge_data=False, language="all",
         
         # Apply label formatting functions
         df = create_hard_labels(df)
-        df = create_soft_labels(df)       
+        df = create_soft_labels(df)
+
+        if curriculum_learning:
+            print("\nComputing difficulty scores and sorting dataset for Curriculum Learning...")
+            df['difficulty'] = df.apply(lambda row: compute_difficulty(row, "both"), axis=1)
+
         return df
 
     else:
@@ -328,9 +490,13 @@ def load_exist2025_dataset(train_dir, dev_dir, merge_data=False, language="all",
         # Filter by language
         if language in ["en", "es"]:
             tr_hard_df = tr_hard_df[tr_hard_df['lang'] == language]
+            tr_hard_df.reset_index(drop=True, inplace=True)
             tr_soft_df = tr_soft_df[tr_soft_df['lang'] == language]
+            tr_soft_df.reset_index(drop=True, inplace=True)
             dev_hard_df = dev_hard_df[dev_hard_df['lang'] == language]
+            dev_hard_df.reset_index(drop=True, inplace=True)
             dev_soft_df = dev_soft_df[dev_soft_df['lang'] == language]
+            dev_soft_df.reset_index(drop=True, inplace=True)
 
         # Analyze each dataset if requested
         if analyze:
@@ -339,7 +505,58 @@ def load_exist2025_dataset(train_dir, dev_dir, merge_data=False, language="all",
             dev_hard_df = analyze_dataset(dev_hard_df, text_column, "hard_label", output_dir, "dev_hard", soft_labels=False)
             dev_soft_df = analyze_dataset(dev_soft_df, text_column, "soft_label", output_dir, "dev_soft", soft_labels=True)
 
+        if curriculum_learning:
+            print("\nComputing difficulty scores and sorting datasets for Curriculum Learning...")
+            tr_hard_df['difficulty'] = tr_hard_df.apply(lambda row: compute_difficulty(row, "hard"), axis=1)
+            tr_soft_df['difficulty'] = tr_soft_df.apply(lambda row: compute_difficulty(row, "soft"), axis=1)
+            dev_hard_df['difficulty'] = dev_hard_df.apply(lambda row: compute_difficulty(row, "hard"), axis=1)
+            dev_soft_df['difficulty'] = dev_soft_df.apply(lambda row: compute_difficulty(row, "soft"), axis=1)
+
         return tr_hard_df, tr_soft_df, dev_hard_df, dev_soft_df
+
+
+def load_and_preprocess_exist2025_test(test_dir, language="all", text_column="tweet"):
+    """
+    Load and preprocess EXIST2025 test set (unlabeled).
+    
+    Args:
+        test_dir (str): Path to test dataset directory.
+        language (str): "all", "en", or "es" (default: "all").
+        text_column (str): Column containing the text (default: "tweet").
+    
+    Returns:
+        test_df (pd.DataFrame): Preprocessed test DataFrame.
+    """
+    print("\nLoading and preprocessing EXIST2025 test set...")
+
+    # === Load
+    test_dir = os.path.abspath(test_dir)
+
+    # Load test data
+    test_df = pd.read_json(os.path.join(test_dir, 'EXIST2025_test_clean.json')).T.reset_index(drop=True)
+
+    # Standardize ID column
+    test_df = test_df.rename({'id_EXIST': 'id'}, axis=1)
+    test_df.drop(columns=['number_annotators', 'annotators', 'gender_annotators', 'age_annotators', 'ethnicities_annotators', 'study_levels_annotators', 'countries_annotators'], errors='ignore', inplace=True)
+
+    # Filter by language
+    if language in ["en", "es"]:
+        test_df = test_df[test_df['lang'] == language]
+        test_df.reset_index(drop=True, inplace=True)
+
+    # === Preprocessing
+    print("Preprocessing tweets...")
+    test_df[text_column] = test_df.apply(lambda row: preprocessing(row[text_column], row["lang"]), axis=1)
+
+    print(f"\nPerforming Sentiment Analysis on unlabelled test dataset...")
+    test_df['sentiment_score'] = test_df[text_column].astype(str).apply(analyze_sentiment)
+    test_df['sentiment'] = test_df['sentiment_score'].apply(lambda x: 'Positive' if x > 0 else ('Negative' if x < 0 else 'Neutral'))
+
+    # Save Sentiment Distribution Plot
+    print(f"\nSaving Sentiment Distribution for unlabelled test dataset...")
+    save_sentiment_distribution(test_df, os.path.join(output_dir, f"test_sentiment_distribution.png"))
+
+    return test_df
 
 
 def data_splitting(df, label_column, split_ratio=0.2, stratify_label=True):
@@ -402,6 +619,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Process EXIST 2025 dataset.")
     parser.add_argument("--train_dir", type=str, required=True, help="Path to training dataset directory")
     parser.add_argument("--dev_dir", type=str, required=True, help="Path to development dataset directory")
+    parser.add_argument("--test_dir", type=str, required=True, help="Path to test dataset directory")
     parser.add_argument("--output_dir", type=str, required=True, help="Path to save CSV files")
     parser.add_argument("--merge_data", type=bool, default=True, help="Merge train/dev data into one file")
     parser.add_argument("--language", type=str, choices=["all", "en", "es"], default="all", help="Select language filter")
@@ -409,8 +627,9 @@ def parse_args():
     parser.add_argument("--analyze", type=bool, default=True, help="Perform dataset analysis before saving")
     parser.add_argument("--text_column", type=str, default="tweet", help="Column name for text data")
     parser.add_argument("--label_column", type=str, choices=["soft_label", "hard_label"], default="hard_label", help="Column name for label data")
-    parser.add_argument("--split_data", type=bool, default=True, help="Whether to split merged dataset into train/validation")
+    parser.add_argument("--split_data", type=bool, default=False, help="Whether to split merged dataset into train/validation")
     parser.add_argument("--split_ratio", type=float, default=0.2, help="Ratio of validation set")
+    parser.add_argument("--curriculum_learning", type=bool, default=True, help="Compute difficulty scores for curriculum learning")
     return parser.parse_args()
 
 
@@ -419,13 +638,9 @@ if __name__ == "__main__":
     output_dir = os.path.abspath(args.output_dir)
     os.makedirs(output_dir, exist_ok=True)
 
-    if args.evaluation_type == "soft":
-        eval = "soft"
-    else:
-        eval = "hard"
-
+    # Load and preprocess training and development sets
     if args.merge_data:
-        df = load_exist2025_dataset(args.train_dir, args.dev_dir, merge_data=True, language=args.language, analyze=args.analyze, text_column=args.text_column, label_column=args.label_column)
+        df = load_exist2025_dataset(args.train_dir, args.dev_dir, merge_data=True, curriculum_learning = args.curriculum_learning, language=args.language, analyze=args.analyze, text_column=args.text_column, label_column=args.label_column)
         df.to_csv(os.path.join(output_dir, "train_dev_merged_dataset.csv"), index=False, encoding="utf-8")
         
         if args.split_data:
@@ -439,9 +654,14 @@ if __name__ == "__main__":
             print(f"Dev dataset saved: {val_output_path}")
     
     else:
-        tr_hard_df, tr_soft_df, dev_hard_df, dev_soft_df = load_exist2025_dataset(args.train_dir, args.dev_dir, merge_data=False, language=args.language, analyze=args.analyze, text_column=args.text_column, label_column=args.label_column)
+        tr_hard_df, tr_soft_df, dev_hard_df, dev_soft_df = load_exist2025_dataset(args.train_dir, args.dev_dir, merge_data=False, curriculum_learning = args.curriculum_learning, language=args.language, analyze=args.analyze, text_column=args.text_column, label_column=args.label_column)
 
         tr_hard_df.to_csv(os.path.join(output_dir, "training_hard_labels.csv"), index=False, encoding="utf-8")
         tr_soft_df.to_csv(os.path.join(output_dir, "training_soft_labels.csv"), index=False, encoding="utf-8")
         dev_hard_df.to_csv(os.path.join(output_dir, "dev_hard_labels.csv"), index=False, encoding="utf-8")
         dev_soft_df.to_csv(os.path.join(output_dir, "dev_soft_labels.csv"), index=False, encoding="utf-8")
+
+    # Load and preprocess test set
+    test_df = load_and_preprocess_exist2025_test(test_dir = args.test_dir,language = args.language, text_column = args.text_column)
+    test_df.to_csv(os.path.join(output_dir, "test_no_labels_preprocessed.csv"), index=False, encoding="utf-8")
+    print("Dataset Preprocessing completed.")
