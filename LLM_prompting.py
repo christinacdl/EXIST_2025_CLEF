@@ -1,0 +1,154 @@
+import json
+import json_repair
+import torch
+import os
+import pandas as pd
+from tqdm import tqdm
+import argparse
+from collections import Counter
+from pydantic import BaseModel, Field
+from langchain.prompts import PromptTemplate
+from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig, pipeline
+from langchain_huggingface import HuggingFacePipeline
+from utils import evaluate_model_pyeval, set_seed
+
+if torch.cuda.is_available():
+    device = torch.device('cuda')
+else:
+    device = torch.device('cpu')
+print(f"Using GPU is CUDA:{os.environ['CUDA_VISIBLE_DEVICES']}")
+
+os.environ['HF_HOME'] = '/home/ch.christodoulou/classification/CLEF2025_EXIST/hf_cache'
+
+hierarchy = {
+    "YES": ["IDEOLOGICAL-INEQUALITY", "STEREOTYPING-DOMINANCE", "OBJECTIFICATION",
+            "SEXUAL-VIOLENCE", "MISOGYNY-NON-SEXUAL-VIOLENCE"],
+    "NO": []
+}
+
+SEXISM_LABELS = hierarchy["YES"] + ["NO"]
+
+class LabelOutput(BaseModel):
+    labels: list[str] = Field(description="List of sexism labels")
+
+prompt_template = PromptTemplate(
+    input_variables=["tweet", "sentiment_prediction"],
+    template="""
+[INST]
+You are a sexism detection model for analyzing and mitigating sexist social media content.
+You are given a tweet (in English or Spanish) and its sentiment.
+Your task is to:
+- Detect **sexism categories** present in the tweet.
+- Use the provided sentiment to support your decision.
+- Return only the following JSON with the detected categories.
+
+Tweet: ```{tweet}```
+
+Tweet sentiment: {sentiment_prediction}
+
+### Sexism Categories:
+1. IDEOLOGICAL-INEQUALITY
+2. STEREOTYPING-DOMINANCE
+3. OBJECTIFICATION
+4. SEXUAL-VIOLENCE
+5. MISOGYNY-NON-SEXUAL-VIOLENCE
+6. NO
+
+### Output Instructions:
+- Use ONLY the above categories.
+- If there is no sexism, return: ["NO"]
+- You may select more than one category.
+- Return **only** the following JSON. Do not add explanations or comments.
+
+```json
+{{
+  "labels": ["<CATEGORY1>", "<CATEGORY2>", ...]
+}}
+```
+
+Answer:
+[/INST]
+"""
+)
+
+
+def try_extract_labels(raw_response):
+    try:
+        json_str = raw_response[raw_response.find("{"): raw_response.rfind("}") + 1]
+        print("\n[ORIGINAL LLM OUTPUT]\n" + json_str)
+        repaired = json_repair.repair_json(json_str)
+        print("\n[REPAIRED JSON]\n" + (repaired if isinstance(repaired, str) else json.dumps(repaired, indent=2)))
+        if isinstance(repaired, list):
+            response_dict = next((item for item in repaired if isinstance(item, dict) and "labels" in item), {})
+        else:
+            response_dict = json.loads(repaired)
+        labels = response_dict["labels"] if isinstance(response_dict, dict) and "labels" in response_dict else []
+        return [label for label in labels if label in SEXISM_LABELS]
+    except Exception as e:
+        print(f"[!] JSON parsing failed: {e}")
+        return []
+
+
+def compute_prompt_length(input_data, tokenizer):
+    formatted_prompt = prompt_template.format(**input_data)
+    tokens = tokenizer(formatted_prompt, return_tensors="pt")
+    return len(tokens.input_ids[0])
+
+
+def main():
+    set_seed(2025)
+
+    parser_arg = argparse.ArgumentParser()
+    parser_arg.add_argument("--evaluation_type", type=str, default="hard", choices=["hard", "soft"])
+    parser_arg.add_argument("--llm_predictions", type=str, default="llm_predictions.json")
+    args = parser_arg.parse_args()
+
+    dev_df = pd.read_csv("EXIST_2025_Tweets_Dataset/processed/dev_hard_labels.csv")
+
+    model_name = "meta-llama/Llama-3.2-3B-Instruct"
+    bnb_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_use_double_quant=False, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype="float16")
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForCausalLM.from_pretrained(model_name, device_map="cuda", quantization_config=bnb_config)
+
+    def create_dynamic_pipeline(max_new_tokens):
+        pipe = pipeline("text-generation", model=model, tokenizer=tokenizer, max_new_tokens=max_new_tokens)
+        return HuggingFacePipeline(pipeline=pipe)
+
+    llm_only_output = []
+
+    for _, row in tqdm(dev_df.iterrows(), total=len(dev_df), desc="Classifying with LLM"):
+        tweet_id = str(row["id"])
+        print(f"[DEBUG] Processing tweet ID {tweet_id}")
+        tweet = row["tweet"]
+        sentiment_prediction = row.get("sentiment")
+
+        input_data = {"tweet": tweet, "sentiment_prediction": sentiment_prediction}
+
+        prompt_len = compute_prompt_length(input_data, tokenizer)
+        max_model_tokens = 4096
+        available_tokens = max_model_tokens - prompt_len
+        max_new_tokens = min(1024, max(16, available_tokens))
+
+        llm = create_dynamic_pipeline(max_new_tokens)
+        chain = prompt_template | llm.bind(skip_prompt=True)
+
+        try:
+            labels = try_extract_labels(chain.invoke(input_data))
+            labels = labels if labels else ["NO"]
+        except Exception as e:
+            print(f"[ERROR] Failed on ID {tweet_id}: {e}")
+            labels = ["NO"]
+
+        llm_only_output.append({"test_case": "EXIST2025", "id": tweet_id, "value": labels})
+
+    with open(args.llm_predictions, "w", encoding="utf-8") as f:
+        json.dump(llm_only_output, f, indent=2, ensure_ascii=False)
+
+    gold_json = f"EXIST_2025_Tweets_Dataset/dev/EXIST2025_dev_task1_3_gold_{args.evaluation_type}.json"
+    results = evaluate_model_pyeval(predictions_json=args.llm_predictions, gold_json=gold_json, mode=args.evaluation_type)
+
+    print("\nPyEvALL Evaluation Results:")
+    print(results)
+
+if __name__ == "__main__":
+    main()
