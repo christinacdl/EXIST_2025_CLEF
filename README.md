@@ -1,5 +1,6 @@
 # EXIST_2025_CLEF
-My participation in Sub-task 1.3 of EXIST (sEXism Identification in Social neTworks)
+
+# My participation in Sub-task 1.3 of EXIST (sEXism Identification in Social neTworks)
 
 Step 1: ```bash run_process_data.sh``` => It runs ```process_data.py``` to load and pre-process all the data
 
