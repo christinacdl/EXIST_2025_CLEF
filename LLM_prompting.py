@@ -31,34 +31,79 @@ SEXISM_LABELS = hierarchy["YES"] + ["NO"]
 class LabelOutput(BaseModel):
     labels: list[str] = Field(description="List of sexism labels")
 
+# prompt_template = PromptTemplate(
+#     input_variables=["tweet", "sentiment_prediction"],
+#     template="""
+# [INST]
+# You are a sexism detection model for analyzing and mitigating sexist social media content.
+# You are given a tweet (in English or Spanish) and its sentiment.
+# Your task is to:
+# - Detect **sexism categories** present in the tweet.
+# - Use the provided sentiment to support your decision.
+# - Return only the following JSON with the detected categories.
+
+# Tweet: ```{tweet}```
+
+# Tweet sentiment: {sentiment_prediction}
+
+# ### Sexism Categories:
+# 1. IDEOLOGICAL-INEQUALITY
+# 2. STEREOTYPING-DOMINANCE
+# 3. OBJECTIFICATION
+# 4. SEXUAL-VIOLENCE
+# 5. MISOGYNY-NON-SEXUAL-VIOLENCE
+# 6. NO
+
+# ### Output Instructions:
+# - Use ONLY the above categories.
+# - If there is no sexism, return: ["NO"]
+# - You may select more than one category.
+# - Return **only** the following JSON. Do not add explanations or comments.
+
+# ```json
+# {{
+#   "labels": ["<CATEGORY1>", "<CATEGORY2>", ...]
+# }}
+# ```
+
+# Answer:
+# [/INST]
+# """
+# )
 prompt_template = PromptTemplate(
     input_variables=["tweet", "sentiment_prediction"],
     template="""
 [INST]
-You are a sexism detection model for analyzing and mitigating sexist social media content.
-You are given a tweet (in English or Spanish) and its sentiment.
-Your task is to:
-- Detect **sexism categories** present in the tweet.
-- Use the provided sentiment to support your decision.
-- Return only the following JSON with the detected categories.
+You are a sexism detection assistant analyzing tweets in English or Spanish. Each tweet is accompanied by its sentiment.
 
-Tweet: ```{tweet}```
+Your task is:
+- To detect all applicable **sexism categories** from a predefined list.
+- Use the sentiment to inform your judgment (e.g., aggressive tone may signal abuse).
+- Consider **each category independently**; multiple categories can apply.
+- If no sexism is present, return ONLY ["NO"].
 
-Tweet sentiment: {sentiment_prediction}
+Tweet:
+"{tweet}"
 
-### Sexism Categories:
-1. IDEOLOGICAL-INEQUALITY
-2. STEREOTYPING-DOMINANCE
-3. OBJECTIFICATION
-4. SEXUAL-VIOLENCE
-5. MISOGYNY-NON-SEXUAL-VIOLENCE
-6. NO
+Sentiment: {sentiment_prediction}
 
-### Output Instructions:
-- Use ONLY the above categories.
-- If there is no sexism, return: ["NO"]
-- You may select more than one category.
-- Return **only** the following JSON. Do not add explanations or comments.
+### Sexism Categories (with definitions):
+1. **IDEOLOGICAL-INEQUALITY**: The text discredits the feminist movement, rejects inequality between men and women, or presents men as victims of gender-based oppression.
+
+2. **STEREOTYPING-DOMINANCE**: The text expresses false ideas about women that suggest they are more suitable to fulfill certain roles (mother, wife, caregiver, submissive, etc.), or inappropriate for certain tasks (e.g., driving, hard work), or claims that men are superior.
+
+3. **OBJECTIFICATION**: The text presents women as objects, disregarding their dignity and personality, or assumes physical traits women must have to fulfill traditional gender roles (beauty standards, hypersexualization, women’s bodies at men’s disposal, etc.).
+
+4. **SEXUAL-VIOLENCE**: The text includes or describes sexual suggestions, requests for sexual favors, or harassment of a sexual nature, including rape or sexual assault.
+
+5. **MISOGYNY-NON-SEXUAL-VIOLENCE**: The text expresses hatred or non-sexual violence toward women (e.g., insults, aggression, or psychological abuse without sexual undertone).
+
+6. **NO**: Use this only if **none** of the above categories are present.
+
+### Output Format:
+- Return only the following JSON.
+- Do not explain your answer.
+- Select **all** categories that apply (or only ["NO"] if none apply).
 
 ```json
 {{
@@ -70,7 +115,6 @@ Answer:
 [/INST]
 """
 )
-
 
 def try_extract_labels(raw_response):
     try:
@@ -88,27 +132,26 @@ def try_extract_labels(raw_response):
         print(f"[!] JSON parsing failed: {e}")
         return []
 
-
 def compute_prompt_length(input_data, tokenizer):
     formatted_prompt = prompt_template.format(**input_data)
     tokens = tokenizer(formatted_prompt, return_tensors="pt")
     return len(tokens.input_ids[0])
 
-
 def main():
     set_seed(2025)
 
     parser_arg = argparse.ArgumentParser()
-    parser_arg.add_argument("--evaluation_type", type=str, default="hard", choices=["hard", "soft"])
-    parser_arg.add_argument("--llm_predictions", type=str, default="llm_predictions.json")
+    parser_arg.add_argument("--evaluation_type", type=str, default="hard", choices=["hard", "soft"], required=True, help="Evaluation type: hard or soft")
+    parser_arg.add_argument("--input_texts_file", type=str, required=True, help="Path to the input texts file")
+    parser_arg.add_argument("--llm_predictions", type=str, default="llm_predictions.json", required=True, help="Path to save the LLM predictions")
     args = parser_arg.parse_args()
 
-    dev_df = pd.read_csv("EXIST_2025_Tweets_Dataset/processed/dev_hard_labels.csv")
+    dev_df = pd.read_csv(args.input_texts_file, sep=",", encoding="utf-8")
 
     model_name = "meta-llama/Llama-3.2-3B-Instruct"
     bnb_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_use_double_quant=False, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype="float16")
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForCausalLM.from_pretrained(model_name, device_map="cuda", quantization_config=bnb_config)
+    model = AutoModelForCausalLM.from_pretrained(model_name, device_map="cuda", quantization_config=bnb_config) #
 
     def create_dynamic_pipeline(max_new_tokens):
         pipe = pipeline("text-generation", model=model, tokenizer=tokenizer, max_new_tokens=max_new_tokens)
