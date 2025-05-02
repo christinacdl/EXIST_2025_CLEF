@@ -26,7 +26,7 @@ from sklearn.metrics import (
 )
 from model_architecture import MultiTask_MultiHead_XLMRoberta
 from utils import (
-    set_seed, check_create_path, process_dataset, tokenize, tokenize_sentiment_sexism, compute_positive_weights, compute_train_number, compute_class_frequencies,
+    flatten_dict, set_seed, check_create_path, process_dataset, tokenize, tokenize_sentiment_sexism, compute_positive_weights, compute_train_number, compute_class_frequencies,
     compute_metrics, DataCollatorMultiTask, compute_positive_weights_lang, generate_predictions_file_sexism_multitask,
     MultiTaskTrainer, MultiLabelTrainer, find_best_thresholds, find_best_thresholds_multitask, calculate_metrics, calculate_metrics_perclass_threshs, calculate_metrics_multitask, calculate_metrics_perclass_threshs_multitask,
     perform_error_analysis, perform_error_analysis_multitask, generate_predictions_file_sexism,  load_best_thresholds_from_checkpoint, generate_multitask_predictions_file, compute_metrics_multitask, write_tsv_dataframe, train_evaluate_predict, generate_predictions_file, evaluate_model_pyeval
@@ -217,7 +217,7 @@ def main(args):
 
     model = model.to(device)
 
-    if args.add_special_tokens_context == True:
+    if args.add_special_tokens == True:
         print('>>>Adding special tokens in tokenizer...')
         additional_special_tokens = ["<user>", "<url>", "<email>", "<date>", "<number>", "<phone>"]
         tokenizer.add_special_tokens({"additional_special_tokens": additional_special_tokens})
@@ -237,11 +237,7 @@ def main(args):
         save_total_limit = args.save_total_limit,
         learning_rate = args.learning_rate,
         num_train_epochs = args.num_train_epochs,
-        # metric_for_best_model = args.metric_for_best_model,
-        # greater_is_better = args.greater_is_better,
-        load_best_model_at_end = args.load_best_model_at_end,
         per_device_train_batch_size = args.train_batch_size,
-        # per_device_eval_batch_size = args.val_batch_size,
         overwrite_output_dir = args.overwrite_output_dir,
         fp16 = args.fp16,
         bf16 = args.bf16,
@@ -288,8 +284,7 @@ def main(args):
                         train_dataset = encoded_train_dataset,        
                         eval_dataset = None,
                         evaluation_type = args.evaluation_type,  
-                        compute_metrics = None,
-                        callbacks = [EarlyStoppingCallback(early_stopping_patience = args.early_stopping_patience)])
+                        compute_metrics = None)
 
         print("TRAINING MODEL...")
         train_result = trainer.train(resume_from_checkpoint=False)
@@ -306,8 +301,7 @@ def main(args):
         test_outputs = trainer.predict(encoded_test_dataset)
         test_logits_sexist = test_outputs.predictions
 
-        thresholds_source_path = "cardiffnlp/twitter-xlm-roberta-large_multitask_processed_BCE_03_30_1e-5_all_hard_BEST_BEST/best_threshs/thresholds.json"
-        with open(thresholds_source_path, "r") as f:
+        with open(args.thresholds_file_path, "r") as f:
             metrics1 = json.load(f)
 
         # ======Test set======
@@ -334,8 +328,7 @@ def main(args):
                     train_dataset = encoded_train_dataset,
                     eval_dataset = None,  
                     tokenizer = tokenizer,
-                    compute_metrics = None,
-                    callbacks = [EarlyStoppingCallback(early_stopping_patience = args.early_stopping_patience)])
+                    compute_metrics = None)
 
         print("TRAINING MODEL...")
         train_result = trainer.train(resume_from_checkpoint=False)
@@ -350,7 +343,7 @@ def main(args):
 
         print("PREDICTING UNLABELLED TEST DATA...")
         test_outputs = trainer.predict(encoded_test_dataset)
-        test_logits_sexist, test_logits_sentiment = test_outputs.predictions
+        test_logits_sexist, test_logits_sentiment, test_language_ids = test_outputs.predictions
 
         with open(args.thresholds_file_path, "r") as f:
             metrics1 = json.load(f)
