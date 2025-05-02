@@ -31,45 +31,6 @@ SEXISM_LABELS = hierarchy["YES"] + ["NO"]
 class LabelOutput(BaseModel):
     labels: list[str] = Field(description="List of sexism labels")
 
-# prompt_template = PromptTemplate(
-#     input_variables=["tweet", "sentiment_prediction"],
-#     template="""
-# [INST]
-# You are a sexism detection model for analyzing and mitigating sexist social media content.
-# You are given a tweet (in English or Spanish) and its sentiment.
-# Your task is to:
-# - Detect **sexism categories** present in the tweet.
-# - Use the provided sentiment to support your decision.
-# - Return only the following JSON with the detected categories.
-
-# Tweet: ```{tweet}```
-
-# Tweet sentiment: {sentiment_prediction}
-
-# ### Sexism Categories:
-# 1. IDEOLOGICAL-INEQUALITY
-# 2. STEREOTYPING-DOMINANCE
-# 3. OBJECTIFICATION
-# 4. SEXUAL-VIOLENCE
-# 5. MISOGYNY-NON-SEXUAL-VIOLENCE
-# 6. NO
-
-# ### Output Instructions:
-# - Use ONLY the above categories.
-# - If there is no sexism, return: ["NO"]
-# - You may select more than one category.
-# - Return **only** the following JSON. Do not add explanations or comments.
-
-# ```json
-# {{
-#   "labels": ["<CATEGORY1>", "<CATEGORY2>", ...]
-# }}
-# ```
-
-# Answer:
-# [/INST]
-# """
-# )
 prompt_template = PromptTemplate(
     input_variables=["tweet", "sentiment_prediction"],
     template="""
