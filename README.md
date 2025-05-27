@@ -8,6 +8,8 @@ Step 2: ```bash run_train_model.sh``` => It runs ```train_model.py``` to fine-tu
 
 Step 3: ```bash run_LLM.sh``` => It runs the ```LLM_prompting.py``` to prompt an LLM to annotate with the sexism labels the input data
 
-Step 4: ```bash run_majority_vote.sh``` => It runs the ```majority_vote.py``` to create majority predictions based on the models' level of agreement
+Step 4: ```bash run_LLM_RAG.sh``` => It runs the ```rag.py``` to prompt an LLM to annotate with the sexism labels the input data using chain-of-thought reasoning and RAG for contextual information
 
-Step 5: ```bash run_train_model2.sh``` => It runs ```train_model2.py``` to ONLY fine-tune either baseline models with the standard architecture or the multi-task model architecture without any evaluation.
+Step 5: ```bash run_majority_vote.sh``` => It runs the ```majority_vote.py``` to create majority predictions based on the models' level of agreement
+
+Step 6: ```bash run_train_model2.sh``` => It runs ```train_model2.py``` to ONLY fine-tune either baseline models with the standard architecture or the multi-task model architecture without any evaluation
